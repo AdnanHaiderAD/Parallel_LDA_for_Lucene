@@ -9,4 +9,4 @@ Depending on the number of the available worker threads, the terms in the Lucene
 
 The main class :ParallelLDASimulator
 
-This class uses a static method from the class AnalyseWithLDA which is part of my Latent_Dirichlet_Allocation_with_Lucene project
+
