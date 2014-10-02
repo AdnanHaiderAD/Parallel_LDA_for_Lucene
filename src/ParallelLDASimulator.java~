@@ -158,7 +158,11 @@ public class ParallelLDASimulator {
     					termids[k] = store.getwordID(termSequences.get(k));
     			}
     			documents.add(new LDADocumentObject(termids));
-    	
+    	//===========================================================		
+    			//print the magnum docids of the lucene docs:
+    			TermFreqVector v2 = reader.getTermFreqVector(listOfDocs.get(j), "docid");
+    			String[] idContainer = v2.getTerms();
+    			System.out.println("lucene doc id "+ listOfDocs.get(j)+ "magnum doc id " +idContainer[0]);
     	//============================================================		
     		}	
     		catch (Exception e) {
