@@ -8,10 +8,6 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import latentdirichlet.LDA_Simulation;
-import lda_gibbs.LDADocument;
-
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.TermFreqVector;
 import org.apache.lucene.search.Similarity;
@@ -82,7 +78,7 @@ public class ParallelLDASimulator {
 	private void runSimulator(IndexReader reader){
 		setUpTopicCounters();
 		/**construct LDA document objects from the lucene index**/
-	    ArrayList<LDADocumentObject> documents = new ArrayList<LDADocumentObject>();
+	        ArrayList<LDADocumentObject> documents = new ArrayList<LDADocumentObject>();
 		constructLDAdocs(reader,documents);
 		//===========================================================
 		/** partition the LDA documents into groups**/
@@ -239,7 +235,21 @@ public class ParallelLDASimulator {
 				count+=1;
 			}
 		}
-		LDA_Simulation.visualiseDocTopicMatrix(docTopicMatrix);
+		visualiseDocTopicMatrix(docTopicMatrix);
+	}
+
+	/** output the topic composition present in individual  documents and the word composition present in individual topics**/
+	private void visualiseDocTopicMatrix(float[][] docTopicMatrix){
+		for (int i =0; i < docTopicMatrix.length;i++){
+			StringBuffer str = new StringBuffer();
+			str.append("doc "+ Integer.toString(i)+ " =  ");
+			for (int j =0 ; j < docTopicMatrix[i].length;j++ ){
+				str.append(" topic " + Integer.toString(j) + " * " + Float.toString(docTopicMatrix[i][j]));
+			}
+			System.out.println(str.toString());
+			
+		}
+	
 	}
 	private void printWordDisInTopics(){
 		for (int i =0; i <numOfTopics; i++){
