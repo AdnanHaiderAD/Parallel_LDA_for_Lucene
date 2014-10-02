@@ -8,4 +8,5 @@ The algorithm used to perform a multi-threaded version of the LDA is taken from 
 Depending on the number of the available worker threads, the terms in the Lucene Index are partitioned in such a way that each worker thread operates on a distict set of words exclusive to that thread for all documents
 
 The main class :ParallelLDASimulator
+
 This class uses a static method from the class AnalyseWithLDA which is part of my Latent_Dirichlet_Allocation_with_Lucene project
