@@ -1,0 +1,289 @@
+package parallelLDA;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import latentdirichlet.LDA_Simulation;
+import lda_gibbs.LDADocument;
+
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.TermFreqVector;
+import org.apache.lucene.search.Similarity;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
+
+
+
+public class ParallelLDASimulator {
+	
+	/** stores dictionary of unique words**/
+	private WordStore store;
+	private LDAParallelSampler ldasampler;
+	private transient ExecutorService executorService;
+	
+	/**Each TopicCounter object represents a empirical distribution of words that conceptualises topics in docs**/
+	private TopicCounter[] topicCounters;
+	
+	private int numOfTopics;
+	private int numberOfDocs;
+	/*directory path of the refined lucene directory**/
+	private String dirpath;
+	
+	
+    /** max iterations*/
+    private static int ITERATIONS = 10000;
+	/** perplexityInterval **/
+    private static int perplexityInterval = 40;
+    
+    /** allocates each working thread with a unique ID. Each thread that accesses the variable
+     * (via its get or set method) has its own, independently initialized copy of the variable.
+     */
+    public static transient ThreadLocal<Integer> samplingCpuModulo = new ThreadLocal<Integer>() {
+		int j = 0;
+		protected Integer initialValue() {
+            synchronized (this) {
+                this.set(j++);
+            }
+            return this.get();
+        }
+
+
+    };
+    
+	public ParallelLDASimulator(String dirpath,int numOfTopics){
+		this.numOfTopics = numOfTopics;
+		this.dirpath = dirpath;
+		//==========================================================
+		/** initialise a reader on the lucene directory and set up the word store**/
+		IndexReader reader = null; 
+		try {
+			reader =readLuceneIndex(dirpath);
+			this.store = new WordStore(reader.terms());
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		//=========================================================
+		this.executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+		
+		/** run Simulator and extract conceptual topics from documents**/
+		runSimulator(reader);
+	}
+	
+	private void runSimulator(IndexReader reader){
+		setUpTopicCounters();
+		/**construct LDA document objects from the lucene index**/
+	    ArrayList<LDADocumentObject> documents = new ArrayList<LDADocumentObject>();
+		constructLDAdocs(reader,documents);
+		//===========================================================
+		/** partition the LDA documents into groups**/
+		int numOfgroups = Runtime.getRuntime().availableProcessors();
+		ArrayList<List<LDADocumentObject>> docPartitions = new ArrayList<List<LDADocumentObject>>(numOfgroups);
+		for (int i =0 ; i<numOfgroups;i++) docPartitions.add(new ArrayList<LDADocumentObject>());
+		for (int i = 0; i<documents.size();i++){
+			documents.get(i).intialiseCounts(numOfTopics,topicCounters);
+			docPartitions.get(i % numOfgroups).add(documents.get(i));
+		}
+		documents = null;
+		System.gc();
+		//==========================================================
+		this.ldasampler.numOFTopics = numOfTopics;
+		this.ldasampler.topicCounters = topicCounters;
+		this.ldasampler.v = store.numberofWords();
+		float time = System.currentTimeMillis();
+		runParallelLDA(docPartitions);
+		executorService.shutdown();
+		
+		//=========================================================
+		/** print the distribution of topics in docs**/
+		System.out.println();
+		printTopicdisIndocs(docPartitions);
+		System.out.println();
+		printWordDisInTopics();
+		
+	}
+
+	/** For each topic, a topicCounter object is created that defines each topic as a distribution of words**/
+	private void setUpTopicCounters() {
+		this.topicCounters = new TopicCounter[numOfTopics];
+		for(int topicId=0; topicId<numOfTopics; topicId++) {
+            topicCounters[topicId] = new TopicCounter(store.numberofWords());
+		}
+		
+	}
+	
+	
+	/** this function maps each lucene document to a unique LDA document object**/
+	public void constructLDAdocs(IndexReader reader, List<LDADocumentObject> documents){
+		//==========================================================
+		/**filter out deleted docs from lucene index**/
+		int docNum = reader.maxDoc();
+		Similarity measure = Similarity.getDefault();
+		ArrayList<Integer> listOfDocs = new ArrayList<Integer>();
+		for(int i=0;i<docNum;i++){
+			if (!reader.isDeleted(i)) {
+				listOfDocs.add(i);
+			}
+		}
+		this.numberOfDocs =listOfDocs.size();
+		//=========================================================
+		/**convert each lucene doc to an LDA document object**/
+	    for (int j=0;j<listOfDocs.size();j++){
+    		try{
+    			TermFreqVector v = reader.getTermFreqVector(listOfDocs.get(j), "contents");
+    			if( v == null) continue;
+    			String[] terms = v.getTerms();
+    			int[] termfrequencies = v.getTermFrequencies();
+    			ArrayList<String> termSequences = new ArrayList<String>();
+    			/* the orders in which the terms occur in the document is irrelevant since in LDA we assume 
+    			 * exchangeability theorem
+    			 */
+    			for (int i =0 ;i <termfrequencies.length;i++){
+    				int freq = termfrequencies[i];
+    				for (int k=0; k<freq; k++){
+    					termSequences.add(terms[i]);
+    				}
+    			}
+    			int[] termids = new int[termSequences.size()];
+    			for (int k = 0; k < terms.length; k++){
+    					termids[k] = store.getwordID(termSequences.get(k));
+    			}
+    			documents.add(new LDADocumentObject(termids));
+    	//===========================================================		
+    			//print the magnum docids of the lucene docs:
+    			TermFreqVector v2 = reader.getTermFreqVector(listOfDocs.get(j), "docid");
+    			String[] idContainer = v2.getTerms();
+    			System.out.println("lucene doc id "+ listOfDocs.get(j)+ "magnum doc id " +idContainer[0]);
+    	//============================================================		
+    		}	
+    		catch (Exception e) {
+ 				System.out.println("doc: "+j+"");
+ 				e.printStackTrace();
+ 			}
+    	
+    	}
+	}
+	
+	
+	
+	private void runParallelLDA(final ArrayList<List<LDADocumentObject>> docPatitions){
+		double time = System.currentTimeMillis();
+		final int modulo = docPatitions.size();
+		for(int i=0; i<ITERATIONS/perplexityInterval; i++) {
+			
+			for(int iter=0; iter<perplexityInterval; iter++) {
+				//System.out.println("iter "+iter+ "iteration "+i);
+				final Object terminationLock = new Object();
+                final boolean sync = (iter == perplexityInterval-1);
+                final int numOfcpus = modulo;
+                final AtomicInteger countDown = new AtomicInteger(numOfcpus);
+                
+                synchronized (terminationLock) {
+                for (int j=0; j<docPatitions.size(); j++) {
+                	/** Each working thread iterates through all the partitions and operate on a distinct set of words**/
+                    	executorService.submit(new Runnable(){
+                    		public void run() {
+                    			try {
+                    				int vMod =  samplingCpuModulo.get();
+                    				for(int q=0; q<numOfcpus; q++) {
+                    					LDAParallelSampler.sample(docPatitions.get ((q+vMod)%modulo),vMod, modulo);
+                    				}
+                    				if (sync) {
+                    					//System.out.println("Synced: " + vMod + "/" + modulo);
+                    					LDADocumentObject.syncWithGlobalCounters(topicCounters, true, modulo, vMod);
+                    					//System.out.println("DONE");
+                    				}
+                    				if (countDown.decrementAndGet() == 0) {
+                    					//System.out.println("released lock");
+                    					synchronized (terminationLock) {
+                    						terminationLock.notifyAll();
+                    					}
+                    				}
+                    			} catch (Exception err){
+                                err.printStackTrace();
+                    			}
+                    		};
+                    	});
+                	} 	
+                	try {
+                    terminationLock.wait();
+                    } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    }
+                }
+                
+			}
+		}
+	System.out.println("PallelLDA has completed in " + (System.currentTimeMillis()-time));
+	}
+	public static IndexReader readLuceneIndex(String dirpath) throws IOException, InterruptedException{
+    	Directory dir = FSDirectory.open(new File(dirpath));
+    	System.out.println(new File(dirpath).exists());
+		if (!IndexReader.indexExists(dir)){
+			throw new IOException();
+			}	
+		return IndexReader.open(dir);
+	}
+	
+	private void printTopicdisIndocs(ArrayList<List<LDADocumentObject>> docPatitions){
+		float[][] docTopicMatrix = new float[numberOfDocs][];
+		int count = 0;
+		for (List<LDADocumentObject> partition : docPatitions){
+			for (LDADocumentObject doc : partition){
+				docTopicMatrix[count] = doc.returnTopicdist();
+				count+=1;
+			}
+		}
+		LDA_Simulation.visualiseDocTopicMatrix(docTopicMatrix);
+	}
+	private void printWordDisInTopics(){
+		for (int i =0; i <numOfTopics; i++){
+			TopicCounter topicCounter = topicCounters[i];
+			int[] wordcounts = topicCounter.getWordDist();
+			int[] wordIndex = new int[wordcounts.length];
+			for (int j =0; j<wordIndex.length;j++){
+				wordIndex[j]=j;
+			}
+			StringBuffer str = new StringBuffer();
+			str.append(" topic " + Integer.toString(i) + " = " );
+			for (int j =0 ; j <wordcounts.length ;j++){
+				int max = j;
+				for ( int k =j+1; k< wordcounts.length;k++){
+					if (wordcounts[k]> wordcounts[max]) max = k;
+				}
+				int tmpIndex = wordIndex[j];
+				int tmpwordCount = wordcounts[j];
+				 wordIndex[j] = wordIndex[max];
+				 wordcounts[j] = wordcounts[max];
+				 wordcounts[max] = tmpwordCount;
+				 wordIndex[max] = tmpIndex;
+			}
+		   int total = topicCounter.getTotalWords();
+		   for (int j =0; j< wordcounts.length;j++){
+			   float value  = (float) wordcounts[j]/total;
+			   if (value >0.002) str.append(store.getWord(wordIndex[j]) + "*"+ value+ " ");
+			   else break;
+		   }
+		   System.out.println(str.toString());
+		}
+	}
+	
+	
+	
+	public static void main(String[] args) {
+		ParallelLDASimulator simulator = new ParallelLDASimulator("/home/adnan/annotestore/private/_ws/027/776/027776/AD/analytics/_luceneV36_wsa_refined", 4);
+	}
+}
+	
+                
+            
+
